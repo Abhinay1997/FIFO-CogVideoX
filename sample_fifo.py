@@ -200,9 +200,8 @@ def main(args):
                 del output_latents
 
             latents = shift_latents(latents, videogen_pipeline.scheduler)
-            
-            
 
+            
             if i >= max_queue_length:
                 if args.save_frames:
                     output_path = os.path.join(fifo_dir, f"frame_{i:04d}.png")
