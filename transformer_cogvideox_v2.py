@@ -576,7 +576,6 @@ class CogVideoXTransformer3DModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
             else:
                  #for the hidden states use timestep size [2, 256 * f, 512, 3072]
                 #for the encoder hidden states use timestep size [2, 1, 512, 3072] by choosing the first timestep which is going to be the min.
-                # print(hidden_states.shape, encoder_hidden_states.shape)
                 hidden_states, encoder_hidden_states = block(
                     hidden_states=hidden_states,
                     encoder_hidden_states=encoder_hidden_states,

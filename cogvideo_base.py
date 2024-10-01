@@ -9,6 +9,9 @@ from diffusers.utils.torch_utils import randn_tensor
 
 from tqdm import trange, tqdm
 from torchvision.utils import save_image
+import os
+
+os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 
 
 checkpoint = "THUDM/CogVideoX-2b"
@@ -36,11 +39,54 @@ pipe.to("cuda")
 print("model loading")
 ### FIFO Pipeline
 
+def prepare_latents(args, latents_dir, scheduler):
+    latents_list = []
+    video = torch.load(os.path.join(latents_dir, "video.pt"))
+
+    timesteps = scheduler.timesteps
+
+    queue_length = (args.video_length - 1) // pipe.vae_scale_factor_temporal + 1 
+    queue_length = queue_length * args.num_partitions
+
+    video_length = (args.video_length - 1) // pipe.vae_scale_factor_temporal + 1
+
+    print('video', video.shape, 'queue', args.queue_length)
+    if args.lookahead_denoising:
+        for i in range(video_length // 2):
+            t = timesteps[-1]
+            alpha = scheduler.alphas_cumprod[t]
+            beta = 1 - alpha
+            x_0 = video[:,[0], :]
+            latents = alpha**(0.5) * x_0 + beta**(0.5) * torch.randn_like(x_0)
+            latents_list.append(latents)
+        for i in range(queue_length):
+            t = timesteps[queue_length-i-1]
+            alpha = scheduler.alphas_cumprod[t]
+            beta = 1 - alpha
+            frame_idx = max(0, i-(queue_length - video_length))
+            x_0 = video[:,[frame_idx],:]
+            
+            latents = alpha**(0.5) * x_0 + beta**(0.5) * torch.randn_like(x_0)
+            latents_list.append(latents)
+    else:
+        for i in range(queue_length):
+            t = timesteps[queue_length-i-1]
+            alpha = scheduler.alphas_cumprod[t]
+            beta = 1 - alpha
+
+            frame_idx = max(0, i-(queue_length - video_length))
+            x_0 = video[:,[frame_idx],:]
+            
+            latents = alpha**(0.5) * x_0 + beta**(0.5) * torch.randn_like(x_0)
+            latents_list.append(latents)
+
+    latents = torch.cat(latents_list, dim=1)
+    return latents
+
 def shift_latents(latents, scheduler):
     # shift latents
-    print('shift latents', latents.shape)
     latents[:,:-1,:] = latents[:,1:,:].clone()
-
+    
     # add new noise to the last frame
     latents[:,-1,:] = torch.randn_like(latents[:,-1,:]) * scheduler.init_noise_sigma
 
@@ -49,19 +95,11 @@ def shift_latents(latents, scheduler):
 
 @torch.no_grad()
 def main(args):
-    # args.video_length a.k.a f = 16 or 48 need to check if to use video frames or video latents
-    # args.height
-    # args.width
-    # args.new_video_length #total num of frames in final video
-    # args.video_length #num of frames per iteration to be processed/denoised a.k.a partition size
-    # args.num_partitions
-    # args.queue_length = args.video_length * args.num_partitions
-    # args.num_sampling_steps = args.video_length * args.num_partitions
-    # args.lookahead_denoising
     prompt = "A detailed wooden toy ship with intricately carved masts and sails is seen gliding smoothly over a plush, blue carpet that mimics the waves of the sea. The ship's hull is painted a rich brown, with tiny windows. The carpet, soft and textured, provides a perfect backdrop, resembling an oceanic expanse. Surrounding the ship are various other toys and children's items, hinting at a playful environment. The scene captures the innocence and imagination of childhood, with the toy ship's journey symbolizing endless adventures in a whimsical, indoor setting."
     batch_size = 1
     num_videos_per_prompt = 1
     generator = torch.Generator('cuda').manual_seed(42)
+
     fifo_video_frames = []
     fifo_first_latents = []
 
@@ -95,18 +133,23 @@ def main(args):
     #         device=pipe._execution_device,
     #         generator=generator
     #     )
-    latents = randn_tensor(
-        (batch_size * num_videos_per_prompt,
-         max_queue_length,
-         pipe.transformer.config.in_channels,
-         args.height // pipe.vae_scale_factor_spatial,
-         args.width // pipe.vae_scale_factor_spatial),
-         generator=generator, device=pipe._execution_device, dtype=dtype
-    )
+    # latents = randn_tensor(
+    #     (batch_size * num_videos_per_prompt,
+    #      max_queue_length,
+    #      pipe.transformer.config.in_channels,
+    #      args.height // pipe.vae_scale_factor_spatial,
+    #      args.width // pipe.vae_scale_factor_spatial),
+    #      generator=generator, device=pipe._execution_device, dtype=dtype
+    # )
     
     num_vae = (new_video_length - 1) // (video_length-1)
     if (new_video_length - 1) % (video_length-1) != 0:
         num_vae += 1
+
+    latents_dir = "./latents"
+    latents = prepare_latents(args, latents_dir, scheduler=scheduler)
+
+    print('latents shape', latents.shape)
     
     num_iterations = num_vae * (video_length-1) + 1 + args.queue_length
     for i in trange(num_iterations):
@@ -187,6 +230,7 @@ def main(args):
             output_vae_path = os.path.join(args.output_dir, f"{prompt_save}.mp4")
         imageio.mimwrite(output_vae_path, fifo_vae_video_frames, fps=args.fps, quality=9)
 
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_path", type=str, default='LanguageBind/Open-Sora-Plan-v1.1.0')
@@ -207,7 +251,7 @@ if __name__ == "__main__":
     # parser.add_argument('--tile_overlap_factor', type=float, default=0.25)
     # parser.add_argument('--enable_tiling', action='store_true')
     # parser.add_argument("--cache_dir", type=str, default="./cache")
-    parser.add_argument("--video_length", "-f", type=int, default=48)
+    parser.add_argument("--video_length", "-f", type=int, default=24)
     parser.add_argument("--new_video_length", "-N", type=int, default=100)
     parser.add_argument("--num_partitions", "-n", type=int, default=2)
     parser.add_argument("--lookahead_denoising", "-ld", action='store_false', default=False)

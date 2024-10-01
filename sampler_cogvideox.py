@@ -371,10 +371,12 @@ class CogVideoXDDIMScheduler(SchedulerMixin, ConfigMixin):
         prev_timestep = timestep - self.config.num_train_timesteps // self.num_inference_steps
         print('prev_timestep', prev_timestep)
         ## If prev_timestep < 0, make it 0
-        temporal_scale_factor = sample.shape[2] // timestep.shape[0]
-        broadcast_shape = (1, len(timestep) * temporal_scale_factor, 1, 1, 1)
+        temporal_scale_factor = sample.shape[1] // timestep.shape[0]
+        broadcast_shape = (1, len(timestep) ,1, 1, 1)
+        print('sample', sample.shape, 'timestep', timestep.shape)
+        print('broadcast_shape', broadcast_shape)
+
         # 2. compute alphas, betas
-    
         alpha_prod_t = torch.index_select(self.alphas_cumprod, 0, timestep)
         alpha_prod_t = torch.repeat_interleave(alpha_prod_t, temporal_scale_factor).view(broadcast_shape)
         
@@ -413,6 +415,7 @@ class CogVideoXDDIMScheduler(SchedulerMixin, ConfigMixin):
         a_t = ((1 - alpha_prod_t_prev) / (1 - alpha_prod_t)) ** 0.5 #should be a tensor instead. Each alpha for one frame
         b_t = alpha_prod_t_prev**0.5 - alpha_prod_t**0.5 * a_t
         # print("a_t", a_t.shape, "sample", sample.shape, "b_t", b_t.shape) # should be [f]. Resize to [256 * f]
+        print('t', timestep, 'a_t', a_t)
         prev_sample = a_t * sample + b_t * pred_original_sample
 
         if not return_dict:
